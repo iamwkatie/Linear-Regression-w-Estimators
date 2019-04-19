@@ -73,5 +73,145 @@ for feature_batch, label_batch in ds.take(1):
   print('A batch of Ages  :', feature_batch['age'])
   print()
   print('A batch of Labels:', label_batch )
+
   
- 
+ds = census_dataset.input_fn(train_file, num_epochs=5, shuffle=True, batch_size=10)
+
+for feature_batch, label_batch in ds.take(1):
+  print('Feature keys:', list(feature_batch.keys())[:5])
+  print()
+  print('Age batch   :', feature_batch['age'])
+  print()
+  print('Label batch :', label_batch )
+  
+
+  
+#Configure the train_inpf to iterate over the data twice:
+import functools
+
+train_inpf = functools.partial(census_dataset.input_fn, train_file, num_epochs=2, shuffle=True, batch_size=64)
+test_inpf = functools.partial(census_dataset.input_fn, test_file, num_epochs=1, shuffle=False, batch_size=64)
+
+
+
+##Selecting and Engineering Features for the Model
+### Base Feature Columns
+####Numericals
+
+age = fc.numeric_column('age')
+
+#Train and evaluate a model using only the age feature:
+classifier = tf.estimator.LinearClassifier(feature_columns=[age])
+classifier.train(train_inpf)
+result = classifier.evaluate(test_inpf)
+
+clear_output()  # used for display in notebook
+print(result)
+
+
+#We define a NumericColumn for each continuous feature column that we want to use in the model:
+education_num = tf.feature_column.numeric_column('education_num')
+capital_gain = tf.feature_column.numeric_column('capital_gain')
+capital_loss = tf.feature_column.numeric_column('capital_loss')
+hours_per_week = tf.feature_column.numeric_column('hours_per_week')
+
+my_numeric_columns = [age,education_num, capital_gain, capital_loss, hours_per_week]
+
+fc.input_layer(feature_batch, my_numeric_columns).numpy()
+
+
+#Retrain the model on the features by changing the feature_columns argument to the constructor:
+classifier = tf.estimator.LinearClassifier(feature_columns=my_numeric_columns)
+classifier.train(train_inpf)
+
+result = classifier.evaluate(test_inpf)
+
+clear_output()
+
+for key,value in sorted(result.items()):
+  print('%s: %s' % (key, value))
+  
+
+  
+#Categorical columns
+relationship = fc.categorical_column_with_vocabulary_list(
+    'relationship',
+    ['Husband', 'Not-in-family', 'Wife', 'Own-child', 'Unmarried', 'Other-relative'])
+
+
+#We run the input layer, configured with both the age and relationship columns:
+fc.input_layer(feature_batch, [age, fc.indicator_column(relationship)])
+
+
+#Since we don't know the set of possible values in advance, we use the categorical_column_with_hash_bucket instead:
+occupation = tf.feature_column.categorical_column_with_hash_bucket(
+    'occupation', hash_bucket_size=1000)
+
+for item in feature_batch['occupation'].numpy():
+    print(item.decode())
+    
+occupation_result = fc.input_layer(feature_batch, [fc.indicator_column(occupation)])
+
+occupation_result.numpy().shape
+
+tf.argmax(occupation_result, axis=1).numpy()
+
+
+#Define the other categorical features:
+education = tf.feature_column.categorical_column_with_vocabulary_list(
+    'education', [
+        'Bachelors', 'HS-grad', '11th', 'Masters', '9th', 'Some-college',
+        'Assoc-acdm', 'Assoc-voc', '7th-8th', 'Doctorate', 'Prof-school',
+        '5th-6th', '10th', '1st-4th', 'Preschool', '12th'])
+
+marital_status = tf.feature_column.categorical_column_with_vocabulary_list(
+    'marital_status', [
+        'Married-civ-spouse', 'Divorced', 'Married-spouse-absent',
+        'Never-married', 'Separated', 'Married-AF-spouse', 'Widowed'])
+
+workclass = tf.feature_column.categorical_column_with_vocabulary_list(
+    'workclass', [
+        'Self-emp-not-inc', 'Private', 'State-gov', 'Federal-gov',
+        'Local-gov', '?', 'Self-emp-inc', 'Without-pay', 'Never-worked'])
+
+my_categorical_columns = [relationship, occupation, education, marital_status, workclass]
+
+
+#We use both sets of columns to configure a model that uses all these features:
+classifier = tf.estimator.LinearClassifier(feature_columns=my_numeric_columns+my_categorical_columns)
+classifier.train(train_inpf)
+result = classifier.evaluate(test_inpf)
+
+clear_output()
+
+for key,value in sorted(result.items()):
+  print('%s: %s' % (key, value))
+  
+
+  
+##Derived feature columns
+
+##Making Continuous Features Categorical through Bucketization
+#The income to age relationship non-linear with three cases:
+# 1. Income always increases at some rate as age grows (positive correlation),
+# 2. Income always decreases at some rate as age grows (negative correlation), or
+# 3. Income stays the same no matter at what age (no correlation).
+#To learn the fine-grained correlation between income and each age group separately, we leverage bucketization.
+
+age_buckets = tf.feature_column.bucketized_column(
+    age, boundaries=[18, 25, 30, 35, 40, 45, 50, 55, 60, 65])
+
+fc.input_layer(feature_batch, [age, age_buckets]).numpy()
+
+
+
+
+
+
+
+
+
+
+
+
+
