@@ -205,13 +205,164 @@ fc.input_layer(feature_batch, [age, age_buckets]).numpy()
 
 
 
+##Learning complex relationships with crossed column
+
+#Using each base feature column separately may not be enough to explain the data. For example, the correlation between education and the label (earning > 50,000 dollars) may be different for different occupations. Therefore, if we only learn a single model weight for education="Bachelors" and education="Masters", we won't capture every education-occupation combination (e.g. distinguishing between education="Bachelors" AND occupation="Exec-managerial" AND education="Bachelors" AND occupation="Craft-repair").
+#To learn the differences between different feature combinations, we add crossed feature columns to the model:
+
+education_x_occupation = tf.feature_column.crossed_column(
+    ['education', 'occupation'], hash_bucket_size=1000)
+
+age_buckets_x_education_x_occupation = tf.feature_column.crossed_column(
+    [age_buckets, 'education', 'occupation'], hash_bucket_size=1000)
+
+
+import tempfile
+
+base_columns = [
+    education, marital_status, relationship, workclass, occupation,
+    age_buckets,
+]
+
+crossed_columns = [
+    tf.feature_column.crossed_column(
+        ['education', 'occupation'], hash_bucket_size=1000),
+    tf.feature_column.crossed_column(
+        [age_buckets, 'education', 'occupation'], hash_bucket_size=1000),
+]
+
+model = tf.estimator.LinearClassifier(
+    model_dir=tempfile.mkdtemp(), 
+    feature_columns=base_columns + crossed_columns,
+    optimizer=tf.train.FtrlOptimizer(learning_rate=0.1))
+
+#The model automatically learns a bias term, which controls the prediction made without observing any features..
+
+
+
+##Training and evaluating the model
+
+train_inpf = functools.partial(census_dataset.input_fn, train_file, 
+                               num_epochs=40, shuffle=True, batch_size=64)
+
+model.train(train_inpf)
+
+clear_output()
+
+
+#After the model is trained, we evaluate the accuracy of the model by predicting the labels of the holdout data:
+results = model.evaluate(test_inpf)
+
+clear_output()
+
+for key,value in sorted(results.items()):
+  print('%s: %0.2f' % (key, value))
+  
+#We can do better!  
+
+import numpy as np
+
+predict_df = test_df[:20].copy()
+
+pred_iter = model.predict(
+    lambda:input_function(predict_df, label_key='income_bracket',
+                               num_epochs=1, shuffle=False, batch_size=10))
+
+classes = np.array(['<=50K', '>50K'])
+pred_class_id = []
+
+for pred_dict in pred_iter:
+  pred_class_id.append(pred_dict['class_ids'])
+
+predict_df['predicted_class'] = classes[np.array(pred_class_id)]
+predict_df['correct'] = predict_df['predicted_class'] == predict_df['income_bracket']
+
+clear_output()
+
+predict_df[['income_bracket','predicted_class', 'correct']]
 
 
 
 
+##Adding Regularization to Prevent Overfitting
+#We add L1 and L2 regularizations to the model:
+
+model_l1 = tf.estimator.LinearClassifier(
+    feature_columns=base_columns + crossed_columns,
+    optimizer=tf.train.FtrlOptimizer(
+        learning_rate=0.1,
+        l1_regularization_strength=10.0,
+        l2_regularization_strength=0.0))
+
+model_l1.train(train_inpf)
+
+results = model_l1.evaluate(test_inpf)
+clear_output()
+for key in sorted(results):
+  print('%s: %0.2f' % (key, results[key]))
+  
+model_l2 = tf.estimator.LinearClassifier(
+    feature_columns=base_columns + crossed_columns,
+    optimizer=tf.train.FtrlOptimizer(
+        learning_rate=0.1,
+        l1_regularization_strength=0.0,
+        l2_regularization_strength=10.0))
+
+model_l2.train(train_inpf)
+
+results = model_l2.evaluate(test_inpf)
+clear_output()
+for key in sorted(results):
+  print('%s: %0.2f' % (key, results[key]))
+  
+  
+#How are the weight distributions?
+def get_flat_weights(model):
+  weight_names = [
+      name for name in model.get_variable_names()
+      if "linear_model" in name and "Ftrl" not in name]
+
+  weight_values = [model.get_variable_value(name) for name in weight_names]
+
+  weights_flat = np.concatenate([item.flatten() for item in weight_values], axis=0)
+
+  return weights_flat
+
+weights_flat = get_flat_weights(model)
+weights_flat_l1 = get_flat_weights(model_l1)
+weights_flat_l2 = get_flat_weights(model_l2)
+
+
+#The models have many zero-valued weights caused by unused hash bins. Mask these weights when viewing the weight distributions:
+weight_mask = weights_flat != 0
+
+weights_base = weights_flat[weight_mask]
+weights_l1 = weights_flat_l1[weight_mask]
+weights_l2 = weights_flat_l2[weight_mask]
 
 
 
+##Now we plot the distributions:
+plt.figure()
+_ = plt.hist(weights_base, bins=np.linspace(-3,3,30))
+plt.title('Base Model')
+plt.ylim([0,500])
+
+plt.figure()
+_ = plt.hist(weights_l1, bins=np.linspace(-3,3,30))
+plt.title('L1 - Regularization')
+plt.ylim([0,500])
+
+plt.figure()
+_ = plt.hist(weights_l2, bins=np.linspace(-3,3,30))
+plt.title('L2 - Regularization')
+_=plt.ylim([0,500])
 
 
+
+#Both types of regularization squeeze the distribution of weights towards zero. 
+#L2 regularization has a greater effect in the tails of the distribution eliminating extreme weights. 
+#L1 regularization produces more exactly-zero values, in this case it sets ~200 to zero.
+
+  
 
